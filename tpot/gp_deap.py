@@ -382,7 +382,7 @@ def mutNodeReplacement(individual, pset):
 @threading_timeoutable(default="Timeout")
 def _wrapped_cross_val_score(sklearn_pipeline, features, target,
                              cv, scoring_function, sample_weight=None,
-                             groups=None, use_dask=False):
+                             groups=None, use_dask=False, single_pipeline_timeout=5 * 60):
     """Fit estimator and compute scores for a given dataset split.
 
     Parameters
@@ -421,7 +421,9 @@ def _wrapped_cross_val_score(sklearn_pipeline, features, target,
         try:
             import dask_ml.model_selection  # noqa
             import dask  # noqa
+            import distributed  # noqa
             from dask.delayed import Delayed
+            from distributed import Future
         except ImportError:
             msg = "'use_dask' requires the optional dask and dask-ml depedencies."
             raise ImportError(msg)
@@ -439,7 +441,14 @@ def _wrapped_cross_val_score(sklearn_pipeline, features, target,
             error_score=float('-inf'),
         )
 
-        cv_results = Delayed(keys[0], dsk)
+        scheduler = dask.base.get_scheduler()
+        cv_results = scheduler(dsk, keys, allow_other_workers=True, sync=False)
+        try:
+            distributed.wait(cv_results, timeout=single_pipeline_timeout)
+        except distributed.TimeoutError:
+            print('Timeout!!!')
+            return "Timeout"
+        cv_results = cv_results[0].result()
         scores = [cv_results['split{}_test_score'.format(i)]
                   for i in range(n_splits)]
         CV_score = dask.delayed(np.array)(scores)[:, 0]
